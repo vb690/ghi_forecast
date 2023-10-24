@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 def visualize_forecast_horizon_accuracy(ax, model_name, error_name, 
                                         error_mean, error_sem=None, 
-                                        ci=95, **plot_kwargs):
+                                        ci=1.96, **plot_kwargs):
     """Visualize the accuracy of a model for each step in the forecast
     horizon. 
 
@@ -21,9 +21,8 @@ def visualize_forecast_horizon_accuracy(ax, model_name, error_name,
     )
 
     if error_sem is not None:
-        multiplier = ((100 - ci) / 2)
-        upper_bound = error_mean + (multiplier * error_sem)
-        lower_bound = error_mean - (multiplier * error_sem)
+        upper_bound = error_mean + (ci * error_sem)
+        lower_bound = error_mean - (ci * error_sem)
         ax.fill_between(
             horizons,
             lower_bound,
