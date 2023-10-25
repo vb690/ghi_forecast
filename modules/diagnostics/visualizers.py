@@ -36,4 +36,27 @@ def visualize_forecast_horizon_accuracy(ax, model_name, error_name,
 
     return ax
 
+
+def visualize_time_series(ax, time_index, time_series, time_series_name, **plot_kwargs):
+    """Visualize q
+
+    When provided will draw confidence intervals based on 
+    the standard error of the mean.
+    """
+    ax.scatter(
+        time_index,
+        time_series,
+        label=time_series_name,
+        **plot_kwargs
+    )
+
+    ax.tick_params(direction="in", top=True, axis="x", rotation=45)
+    ax.grid(
+        visible=True, which="major", axis="x", color="k", alpha=0.25, linestyle="--"
+    )
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Value")
+
+    return ax
+
     
