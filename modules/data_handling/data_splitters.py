@@ -19,7 +19,7 @@ def split_time_series_df(df, start_date, time_column, steps_ahead=None, resoluti
         upper_datetime = insample_df[time_column].max() + pd.to_timedelta(steps_ahead, unit=resolution)
         outsample_df = df[(df[time_column] >= start_date) & (df[time_column] <= upper_datetime)].copy()
     else:
-         df[df[time_column] >= start_date].copy()
+         outsample_df = df[df[time_column] >= start_date].copy()
     return insample_df, outsample_df
 
 
