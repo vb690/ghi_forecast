@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from tqdm import trange
+from tqdm import trange, tqdm
 
 import numpy as np
 
@@ -23,14 +23,20 @@ def split_time_series_df(df, start_date, time_column, steps_ahead=None, resoluti
     return insample_df, outsample_df
 
 
-def expanding_split_time_series_df(df, start_date, time_column, frequency, steps_ahead, resolution="m", early_stop=None):
+def expanding_split_time_series_df(df, start_date, time_column, frequency, steps_ahead, resolution="m", early_stop=0):
     """Split a time_series dataframe in in-sample and out-sample given a start_date generating an 
     expanding window.
 
     """
     start_date = pd.to_datetime(start_date)
-    early_stop_counter = 0
-    while start_date < df[time_column] - pd.Timedelta(steps_ahead, unit=resolution):
+    time_delta = pd.Timedelta(frequency, resolution)
+    start_dates = pd.date_range(
+        start_date, 
+        df[time_column].max() - time_delta, 
+        freq=time_delta
+    )
+    
+    for start_date in tqdm(start_dates):
 
         insample_df, outsample_df = split_time_series_df(
             df=df,
@@ -40,10 +46,6 @@ def expanding_split_time_series_df(df, start_date, time_column, frequency, steps
             resolution=resolution
         )
 
-        start_date += pd.to_timedelta(frequency, unit=resolution)
-        early_stop_counter += 1
-        if early_stop_counter > early_stop:
-            break
         yield insample_df, outsample_df
 
 
