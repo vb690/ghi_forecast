@@ -13,15 +13,6 @@ def static_stat_forecast(time_series, steps_ahead, stat_func):
     out_of_sample_forecast = np.array([computed_stat] * steps_ahead)
     return in_sample_forecast, out_of_sample_forecast
 
-def rolling_stat_forecast(time_series, steps_ahead, stat_func, window_size, **rolling_kwargs):
-    """Generate a steps_ahead forecast propagating the last value
-    of a rolling statistic computed on the time series.
-    """
-    rolling_stat = pd.Series(time_series).rolling(window=window_size, **rolling_kwargs).apply(stat_func)
-    in_sample_forecast = rolling_stat.values
-    last_value = in_sample_forecast[-1]
-    out_of_sample_forecast = np.array([last_value] * steps_ahead)
-    return in_sample_forecast, out_of_sample_forecast
 
 def ewm_forecast(time_series, steps_ahead, alpha=1, **ewm_kwargs):
     """Generate a steps_ahead forecast propagating the last
