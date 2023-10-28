@@ -3,6 +3,7 @@ import numpy as np
 from tqdm import tqdm
 import torch
 
+
 class TorchModelFitter:
     def __init__(
         self,
@@ -22,23 +23,21 @@ class TorchModelFitter:
         stopper,
         epochs,
     ):
-
         pbar = tqdm(range(epochs))
         train_loss_hist = []
         val_loss_hist = []
 
         for epoch in pbar:
-
             model, optimizer, epoch_train_loss = self._train(
                 model=model,
                 train_loader=train_loader,
                 optimizer=optimizer,
-                loss_function=loss_function
+                loss_function=loss_function,
             )
             epoch_val_loss = self._validate(
                 model=model,
                 loss_function=loss_function,
-                validation_generator=validation_loader
+                validation_generator=validation_loader,
             )
 
             train_loss_hist.append(epoch_train_loss)
@@ -56,29 +55,16 @@ class TorchModelFitter:
                 )
                 break
 
-        model = self._load_best_state(
-            model=model, 
-            stopper=stopper
-        )
+        model = self._load_best_state(model=model, stopper=stopper)
 
-        history = {
-            "training_loss": train_loss_hist,
-            "validation_loss": val_loss_hist
-        }
+        history = {"training_loss": train_loss_hist, "validation_loss": val_loss_hist}
 
         return model, optimizer, history
 
-    def _train(
-        self,
-        model,
-        optimizer,
-        train_loader,
-        loss_function
-    ):
+    def _train(self, model, optimizer, train_loader, loss_function):
         training_loss_tracker = 0.0
         model.train(True)
         for batch_number, (batch_X, batch_y) in enumerate(train_loader):
-            
             optimizer.zero_grad()
             yhat = model(batch_X)
 
@@ -87,7 +73,7 @@ class TorchModelFitter:
             optimizer.step()
 
             training_loss_tracker += training_loss.item()
-        
+
         avg_training_loss = training_loss_tracker / (batch_number + 1)
 
         return model, optimizer, avg_training_loss

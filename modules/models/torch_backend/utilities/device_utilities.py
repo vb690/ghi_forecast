@@ -12,8 +12,7 @@ def infer_available_device():
 
 
 def move_to_device(target_tensor, device):
-    """Move a tensor to a given device.
-    """
+    """Move a tensor to a given device."""
     if isinstance(target_tensor, np.ndarray):
         target_tensor = torch.tensor(target_tensor)
     target_tensor = target_tensor.float().to(device)

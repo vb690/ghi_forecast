@@ -20,7 +20,9 @@ def ewm_forecast(time_series, steps_ahead, alpha=1, **ewm_kwargs):
 
     By setting alpha to 1 we obtain a peristence model.
     """
-    in_sample_forecast = pd.Series(time_series).ewm(alpha=alpha, **ewm_kwargs).mean().values
+    in_sample_forecast = (
+        pd.Series(time_series).ewm(alpha=alpha, **ewm_kwargs).mean().values
+    )
     last_value = in_sample_forecast[-1]
     out_of_sample_forecast = np.array([last_value] * steps_ahead)
     return in_sample_forecast, out_of_sample_forecast

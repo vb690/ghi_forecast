@@ -16,7 +16,7 @@ class EarlyStopping:
         self.early_stop = False
 
     def __call__(self, current_loss, model):
-        """On call evaluate if the current loss meets 
+        """On call evaluate if the current loss meets
         the criteria for early stopping.
         """
         self.call_counter += 1
