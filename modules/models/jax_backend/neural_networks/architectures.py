@@ -19,17 +19,14 @@ def mlp(
     prngkey,
     reg_strength: 0.01,
 ):
-    """Implementation of a multilayer perceptron
-    """
+    """Implementation of a multilayer perceptron"""
     dense_init_params, dense_forward = dense(
         weights_init_method=weights_init_method,
         bias_init_method=bias_init_method,
     )
 
     @partial(jit, static_argnums=(0, 1))
-    def init_params(
-        X_shape, y_shape
-    ):
+    def init_params(X_shape, y_shape):
         seed_key, layer_key = random.split(prngkey)
         input_shape = X_shape
 
@@ -71,7 +68,6 @@ def mlp(
         current_params,
         random_state,
     ):
-
         @jit
         def compute_loss(params):
             yhat = forward(X=X, current_params=params, random_state=random_state)

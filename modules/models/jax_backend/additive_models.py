@@ -59,11 +59,9 @@ def custom_ghi_model(
     mlp_layers,
     mlp_init_method,
     mlp_hidden_link_function,
-
     link_function,
     loss_function,
     prngkey,
-
     covariates_reg_strength=0.001,
     seasonality_reg_strength=0.01,
 ):

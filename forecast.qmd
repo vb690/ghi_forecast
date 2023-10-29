@@ -1,0 +1,1372 @@
+---
+title: Forecasting Global Horizontal Irradiance
+author: Valerio Bonometti
+jupyter: python3
+execute:
+  freeze: auto
+---
+
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+from jax import config
+config.update("jax_debug_nans", True)
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+import os
+
+from tqdm import trange, tqdm
+
+import numpy as np
+from scipy.stats import sem
+
+import pandas as pd
+
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+
+import matplotlib.pyplot as plt
+from matplotlib import gridspec
+import seaborn as sns
+
+from modules.diagnostics.visualizers import visualize_forecast_horizon_accuracy, visualize_time_series, visualize_time_series_components_performance
+from modules.diagnostics.metrics import compute_rmse, compute_symmetric_absolute_percentage_error
+from modules.data_handling.data_splitters import split_time_series_df
+```
+
+# Preface
+
+The following notebook rely for a good part on a custom modules which can be found in the modules folder. The structure of the notebook follows roughly these steps
+
+1. Constants definitions
+2. Data loading
+3. Brief Data Exploration
+4. Modelling
+    * Baselines
+    * Advanced Models
+
+Although point 3 includes some data exploration steps, a substantial part of this is also conducted during the modelling phase by looking at model fit and residuals behaviour
+
+
+# Constants
+
+Here we will define constants that will be used acrossed the notebook
+
+```{python}
+#| tags: []
+TRAINING_END_DATE = "2016-01-01"
+
+DATA_FOLDER = "data"
+GHI_FILE = "irradiance.csv"
+WEATHER_FORECAST_FILES = [
+    "nam_lat38.579454_lon121.260320.csv",
+    "nam_lat38.599891_lon121.126680.csv",
+    "nam_lat38.704328_lon121.152788.csv",
+    "nam_lat38.683880_lon121.286556.csv"
+
+]
+SATELLITE_FILE = "satellite.csv"
+```
+
+# Data Loading
+
+In this first section we will focus on loading the data dn conducting very preliminary data manipulation operations. Further data processing will be conducted in a second moment.
+
+After several considerations we opted to utilize only satellite data as covariates for modelling, the weather forecast data appeared to be too erratic for being reliable. The sky image would have required an excessive ammout of pre-processing and analysis in order to execute
+
+## GHI Data
+
+From Wikipedia about GHI:
+
+*Global horizontal irradiance (GHI) is the total irradiance from the Sun on a horizontal surface on Earth. It is the sum of direct irradiance (after accounting for the solar zenith angle of the Sun z) and diffuse horizontal irradiance*
+
+$$GHI = DHI + DNI × cos ⁡ ( z ) {\displaystyle {\text{GHI}}={\text{DHI}}+{\text{DNI}}\times \cos(z)}$$
+
+```{python}
+ghi_df = pd.read_csv(os.path.join(DATA_FOLDER, GHI_FILE), parse_dates=["timeStamp"])
+# We ensure ghi data are continuous
+idx = pd.date_range(ghi_df["timeStamp"].min(), ghi_df["timeStamp"].max(), freq="1min")
+ghi_df = ghi_df.set_index("timeStamp") 
+ghi_df = (
+    ghi_df
+    .reindex(idx, fill_value=np.nan)
+    .interpolate("linear")
+)
+
+ghi_df = (
+    ghi_df
+    .reset_index()
+    .rename({"index": "time"}, axis=1)
+)
+```
+
+## Satellite Images (black and white)
+
+These specifically are GOES-15 images which according to wikipedia are black and white images produced by geosptial satellite. In our case the 10x10 format highlight the low resolution of the image.
+
+```{python}
+satellite_df = pd.read_csv(os.path.join(DATA_FOLDER, SATELLITE_FILE), header=None, parse_dates=[0])
+idx = pd.date_range(satellite_df[0].min(), satellite_df[0].max(), freq="15min")
+satellite_df = satellite_df.set_index(0) 
+satellite_df = (
+    satellite_df
+    .reindex(idx, fill_value=np.nan)
+    .interpolate("nearest")
+)
+
+satellite_df = (
+    satellite_df
+    .reset_index()
+    .rename({"index": "time"}, axis=1)
+)
+```
+
+# Data Exploration
+
+## GHI Data
+
+```{python}
+ghi_df.describe()
+```
+
+```{python}
+ghi_df.info()
+```
+
+```{python}
+# Very relevant
+ghi_df["month"] = ghi_df["time"].dt.month
+ghi_df["day_year"] = ghi_df["time"].dt.day_of_year
+ghi_df["hour"] = ghi_df["time"].dt.hour
+
+# Spurious, these should come out irrelevant if there is no bias in the measurement
+ghi_df["year"] = ghi_df["time"].dt.year
+ghi_df["day_week"] = ghi_df["time"].dt.day_of_week
+ghi_df["minute"] = ghi_df["time"].dt.minute
+```
+
+```{python}
+# We execpt at least 525600 datapoints if data are recorded continuously for 3 years
+(
+    ghi_df
+    .groupby("year")
+    .size()
+)
+```
+
+```{python}
+groupers = [
+    "year",
+    "month",
+    "day_week",
+    "hour"
+]
+fig, axs = plt.subplots(2, 2, figsize=(10, 5), sharey=True)
+
+for ax, grouper in zip(axs.flatten(), groupers):
+
+    sns.boxplot(
+        data=ghi_df,
+        x=grouper,
+        y="ghi",
+        showfliers=False,
+        ax=ax
+    )
+    ax.grid(alpha=0.5)
+
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+dayly_stats = (
+    ghi_df
+    .groupby("day_year")
+    .agg(
+        mean=("ghi", "mean"),
+        std_err_mean=("ghi", lambda x: sem(x))
+    )
+    .reset_index()
+    
+)
+
+plt.figure(figsize=(8, 8))
+plt.scatter(
+    x=dayly_stats["day_year"].values,
+    y=dayly_stats["mean"].values,
+    s=3,
+    c=dayly_stats["mean"].values,
+    cmap="magma"
+)
+plt.errorbar(
+    x=dayly_stats["day_year"].values,
+    y=dayly_stats["mean"].values,
+    yerr=dayly_stats["std_err_mean"].values * 1.96,
+    linewidth=0.5,
+    ls='none',
+    c="grey"
+
+)
+plt.ylabel("Mean GHI")
+plt.xlabel("Day of Year")
+plt.grid()
+```
+
+```{python}
+single_year_ghi_df = ghi_df[ghi_df["year"] == 2015]
+single_month_ghi_df = ghi_df[(ghi_df["year"] == 2015) & (ghi_df["month"] == 7)]
+single_day_ghi_df = ghi_df[(ghi_df["year"] == 2015) & (ghi_df["day_year"] == 175)]
+
+fig = plt.figure(figsize=(10, 6), tight_layout=True)
+gs = gridspec.GridSpec(2, 2)
+
+ax_year = fig.add_subplot(gs[0, :])
+ax_month = fig.add_subplot(gs[1, 0])
+ax_day = fig.add_subplot(gs[1, 1])
+
+
+axes_dfs = {
+   "Year": (ax_year, single_year_ghi_df),
+   "Month": (ax_month, single_month_ghi_df),
+   "Day": (ax_day, single_day_ghi_df)
+
+}
+
+for title, (ax, df) in axes_dfs.items():
+
+    ax = visualize_time_series(
+        ax=ax,
+        time_series_name="Minutely GHI",
+        time_series=df.set_index("time")["ghi"],
+        s=0.05,
+        alpha=0.5
+    )
+    ax.set_title(title)
+    ax.legend()
+```
+
+## Satellite Data
+
+```{python}
+satellite_df.head(5)
+```
+
+```{python}
+satellite_df.describe()
+```
+
+```{python}
+satellite_df.info()
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+fig, axs = plt.subplots(10, 10, figsize=(10, 10), sharex=True, sharey=True)
+
+for row, ax in enumerate(axs.flatten()):
+
+    satellite_img = satellite_df.loc[row, :][np.arange(1, 101)].values.astype("float")
+    satellite_img = satellite_img.reshape(10, 10)
+
+    ax.imshow(satellite_img, cmap="binary")
+
+    ax.set_yticks([])
+    ax.set_xticks([])
+
+plt.tight_layout()
+plt.show()
+```
+
+# Modelling
+
+In this section we will illustrate some modelling approaches for tackling the problem of minutely forecasting with a 30 minutes time horizons. We will start from some very simple baselines and build complexity using the information provided by the fit of the various models.
+
+First of all we need to specify the different type of evaluation framework we could use for fitting and testing the perfromance of our model, each of them has its strengths and weaknesses and rely on different type of assumptions.
+
+### Expanding window scheme
+<img src="images/presentation/expanding_forecast.png" alt="drawing" width="700"/>
+
+### Fixed window scheme
+<img src="images/presentation/windowed_forecast.png" alt="drawing" width="700"/>
+
+### Full history scheme
+<img src="images/presentation/full_forecast.png" alt="drawing" width="700"/>
+
+## Modelling Data Preparation
+
+Here we perfrom a series of data preparations steps necessary for our modelling attempts
+
+```{python}
+# we shift satellite time by 30 minuts so we are always sure to have covariate data in the future (assuming 30 minutes time to get them)
+satellite_df["time"] = satellite_df["time"] + pd.Timedelta("30minutes")
+
+# We divide in-sample and out sample data
+insample_ghi_df, outsample_ghi_df = split_time_series_df(
+    df=ghi_df,
+    start_date=TRAINING_END_DATE,
+    time_column="time"
+)
+insample_satellite_df, outsample_satellite_df = split_time_series_df(
+    df=satellite_df,
+    start_date=TRAINING_END_DATE,
+    time_column="time"
+)
+
+insample_ghi_df = (
+    insample_ghi_df
+    .set_index("time")
+    [["ghi", "year", "month", "day_year", "hour", "minute"]]
+)
+outsample_ghi_df = (
+    outsample_ghi_df
+    .set_index("time")
+    [["ghi", "year", "month", "day_year", "hour", "minute"]]
+)
+
+# Join the covariates of interest
+insample_satellite_df = (
+    insample_satellite_df
+    .set_index("time")
+)
+outsample_satellite_df = (
+    outsample_satellite_df
+    .set_index("time")
+)
+
+insample_ghi_df = pd.merge(
+    insample_ghi_df,
+    insample_satellite_df,
+    how="left",
+    on="time"
+).interpolate("linear", limit_direction="both")
+
+outsample_ghi_df = pd.merge(
+    outsample_ghi_df,
+    outsample_satellite_df,
+    how="left",
+    on="time"
+).interpolate("linear", limit_direction="both")
+```
+
+## Modelling Constants
+
+```{python}
+OUTSAMPLE_WINDOW_SIZE = 30
+NUMBER_OF_SPLITS = int(len(outsample_ghi_df) / OUTSAMPLE_WINDOW_SIZE)
+TIME_SERIES_SPLITTER = TimeSeriesSplit(n_splits=NUMBER_OF_SPLITS, test_size=30)
+
+FULL_SERIES = ghi_df["ghi"].values
+
+EARLY_STOP_LIMIT = 9000
+
+MODELS_RESULTS = {}
+```
+
+## Baseline 
+
+Here we define some increasingly more elaborated baselines
+
+### 0 - Constant Model
+
+$$\hat{y}_{T+1} = \frac{1}{T} \sum_{t0}^T y_t$$
+
+```{python}
+from modules.models.baselines import static_stat_forecast
+
+ground_truth = []
+forecasts = []
+early_stop_counter = 0
+
+for insample_indices, outsample_indices in tqdm(TIME_SERIES_SPLITTER.split(FULL_SERIES)):
+
+    insample_series, outsample_series = FULL_SERIES[insample_indices], FULL_SERIES[outsample_indices]
+    insample_forecast, outsample_forecast = static_stat_forecast(
+        time_series=insample_series,
+        steps_ahead=OUTSAMPLE_WINDOW_SIZE,
+        stat_func=np.mean
+    )
+
+    forecasts.append(outsample_forecast)
+    ground_truth.append(outsample_series)
+    early_stop_counter += 1
+
+    if early_stop_counter > EARLY_STOP_LIMIT:
+        break
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+residual = (
+    pd.Series(np.hstack(ground_truth) - np.hstack(forecasts))
+)
+residual.index = outsample_ghi_df.index[:len(np.hstack(ground_truth))]
+
+fig, axs = plt.subplots(2, 1, figsize=(8, 6))
+
+ax = visualize_time_series(
+    ax=axs[0],
+    time_series=residual,
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+ax=visualize_time_series(
+    axs[1],
+    time_series=residual[-(60 * 24 * 30):],
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+
+
+for ax in axs:
+    ax.axhline(
+        y=0,
+        linestyle=":",
+        c="k"
+    )
+
+plt.suptitle("Mean Persistence Residuals")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+error_mean, error_sem = compute_rmse(
+    y_true=np.array(ground_truth),
+    y_forecast=np.array(forecasts),
+    axis=0
+)
+MODELS_RESULTS["Constant Mean"] = {"error_mean": error_mean, "error_sem": error_sem}
+
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+ax = visualize_forecast_horizon_accuracy(
+    ax=ax,
+    model_name="Constant Mean",
+    error_name="RMSE",
+    error_mean=error_mean,
+    error_sem=error_sem,
+    marker="o",
+    markersize=5
+)
+plt.legend()
+plt.show()
+```
+
+### I - Mean Persistence Model
+
+$$\hat{y}_{S+1} = \frac{1}{S} \sum_{s0}^S y_s$$
+
+```{python}
+mean_persistence_model = (
+    insample_ghi_df
+    .groupby(["day_year", "hour"])
+    ["ghi"]
+    .mean()
+    .reset_index()
+    .rename({"ghi": "ghi_forecast"}, axis=1)
+)
+
+
+outsample_forecast = (
+    outsample_ghi_df
+    .merge(
+        mean_persistence_model,
+        how="left",
+        on=["day_year", "hour"],
+        
+    )
+    .interpolate(method="linear", limit_direction="both")
+    [["ghi", "ghi_forecast"]]
+)
+outsample_forecast.index = outsample_ghi_df.index
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+residual = outsample_forecast["ghi"] - outsample_forecast["ghi_forecast"]
+
+fig, axs = plt.subplots(2, 1, figsize=(8, 6))
+
+ax = visualize_time_series(
+    ax=axs[0],
+    time_series=residual,
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+ax=visualize_time_series(
+    axs[1],
+    time_series=residual[-(60 * 24 * 30):],
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+
+
+for ax in axs:
+    ax.axhline(
+        y=0,
+        linestyle=":",
+        c="k"
+    )
+
+plt.suptitle("Mean Persistence Residuals")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+y_forecast = np.array(
+    np.split(
+        outsample_forecast["ghi_forecast"].values,      
+        int(len(outsample_forecast["ghi"].values) / 30)
+    )
+)
+y_true = np.array(
+    np.split(
+        outsample_forecast["ghi"].values,      
+        int(len(outsample_forecast["ghi"].values) / 30)
+    )
+)
+
+error_mean, error_sem = compute_rmse(
+    y_true=y_true,
+    y_forecast=y_forecast,
+    axis=0
+)
+MODELS_RESULTS["Mean Persistence"] = {"error_mean": error_mean, "error_sem": error_sem}
+
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+ax = visualize_forecast_horizon_accuracy(
+    ax=ax,
+    model_name="Mean Persistence",
+    error_name="RMSE",
+    error_mean=error_mean,
+    error_sem=error_sem,
+    marker="o",
+    markersize=5
+)
+plt.legend()
+plt.show()
+```
+
+### II - Exponential Moving Average
+
+$$\hat{y}_{T+1} = \frac{1}{T} \sum_{t0}^T y_t$$
+
+```{python}
+#| tags: []
+from modules.models.baselines import ewm_forecast
+
+ground_truth = []
+forecasts = []
+early_stop_counter = 0
+
+for insample_indices, outsample_indices in tqdm(TIME_SERIES_SPLITTER.split(FULL_SERIES)):
+
+    insample_series, outsample_series = FULL_SERIES[insample_indices], FULL_SERIES[outsample_indices]
+    insample_forecast, outsample_forecast = ewm_forecast(
+        time_series=insample_series,
+        steps_ahead=30,
+        alpha=0.5,
+    )
+
+    forecasts.append(outsample_forecast)
+    ground_truth.append(outsample_series)
+    early_stop_counter += 1
+
+    if early_stop_counter > EARLY_STOP_LIMIT:
+        break
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+residual = (
+    pd.Series(np.hstack(ground_truth) - np.hstack(forecasts))
+)
+residual.index = outsample_ghi_df.index[:len(np.hstack(ground_truth))]
+
+fig, axs = plt.subplots(2, 1, figsize=(8, 6))
+
+ax = visualize_time_series(
+    ax=axs[0],
+    time_series=residual,
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+ax=visualize_time_series(
+    axs[1],
+    time_series=residual[-(60 * 24 * 30):],
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+
+
+for ax in axs:
+    ax.axhline(
+        y=0,
+        linestyle=":",
+        c="k"
+    )
+
+plt.suptitle("Mean Persistence Residuals")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+error_mean, error_sem = compute_rmse(
+    y_true=np.array(ground_truth),
+    y_forecast=np.array(forecasts),
+    axis=0
+)
+MODELS_RESULTS["Exponential Moving Average"] = {"error_mean": error_mean, "error_sem": error_sem}
+
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+ax = visualize_forecast_horizon_accuracy(
+    ax=ax,
+    model_name="Exponential Moving Average",
+    error_name="RMSE",
+    error_mean=error_mean,
+    error_sem=error_sem,
+    marker="o",
+    markersize=5
+)
+plt.legend()
+plt.show()
+```
+
+## IV - Gaussian Process Based Top-Down Forecast
+
+$$
+\hat{y}_{s_0 : S} \sim \mathcal{GP}(X)\\
+\hat{y}_{S+1} = \boldsymbol{W}\hat{y}_{S}
+$$
+
+```{python}
+daily_ghi_df = (
+    insample_ghi_df
+    .groupby(["day_year", "hour", "minute"])["ghi"]
+    .mean()
+    .reset_index()
+    .groupby(["day_year"])["ghi"]
+    .sum()
+    .reset_index()
+    .rename(
+        {
+            "ghi": "daily_ghi"
+        },
+    axis=1
+    )
+    .set_index(
+        pd.date_range(
+            start="2015-01-01", 
+            end="2015-12-31",
+            freq="d"
+        )
+    )
+)
+
+# We create a weighting scheme for going from hours to minutes
+weighting_df = pd.merge(
+    insample_ghi_df.groupby(["day_year", "hour", "minute"])["ghi"].mean().reset_index(),
+    daily_ghi_df,
+    how="left",
+    on=["day_year"]
+)
+
+weighting_df["weight_day_to_minute"] = (weighting_df["ghi"] / weighting_df["daily_ghi"]).fillna(0)
+weighting_df = weighting_df[["day_year", "hour", "minute", "ghi", "weight_day_to_minute"]]
+
+weighting_df.index = insample_ghi_df[insample_ghi_df["year"] == 2015].index
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+fig, axs = plt.subplots(2, 1, figsize=(8, 6))
+
+ax = visualize_time_series(
+    ax=axs[0],
+    time_series=weighting_df["weight_day_to_minute"],
+    time_series_name="Weighting Day-Minute",
+    s=0.05,
+    alpha=0.5
+)
+ax=visualize_time_series(
+    axs[1],
+    time_series=weighting_df["weight_day_to_minute"][-(60 * 24 * 30):],
+    time_series_name="Weighting Day-Minute",
+    s=0.05,
+    alpha=0.5
+)
+
+
+for ax in axs:
+    ax.axhline(
+        y=0,
+        linestyle=":",
+        c="k"
+    )
+
+plt.suptitle("Weighting Scheme")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ExpSineSquared, WhiteKernel
+
+gaussian_process_scaler = StandardScaler()
+
+yearly_seasonal_kernel = (
+    ExpSineSquared(
+        length_scale=1,
+        periodicity=365.25, 
+        periodicity_bounds="fixed"
+    )
+)
+noise_kernel = (
+    RBF(length_scale=30) + 
+    WhiteKernel(
+        noise_level=0.1**2, 
+        noise_level_bounds=(1e-5, 1e5)
+    )
+)
+gp_model = GaussianProcessRegressor(
+    alpha=0.1,
+    kernel=yearly_seasonal_kernel + noise_kernel,
+    copy_X_train=False
+)
+
+y = (
+    gaussian_process_scaler
+    .fit_transform(daily_ghi_df["daily_ghi"].values.reshape(-1, 1))
+    .flatten()
+)
+X = np.arange(len(y))
+
+
+gp_model = gp_model.fit(X.reshape(-1, 1), y)
+daily_ghi_df["estimated_daily_ghi"] = gaussian_process_scaler.inverse_transform(
+    gp_model.predict(X.reshape(-1, 1)).reshape(-1, 1)
+).flatten()
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+
+ax = visualize_time_series(
+    ax=ax,
+    time_series=daily_ghi_df["daily_ghi"],
+    time_series_name="Daily GHI",
+    s=1,
+    c="k"
+)
+ax.plot(
+    daily_ghi_df["estimated_daily_ghi"].index,
+    daily_ghi_df["estimated_daily_ghi"].values,
+    label="Estimated Daily GHI",
+    c="r",
+    linestyle="--"
+)
+plt.legend()
+plt.show()
+```
+
+```{python}
+estimated_minutely_ghi = (
+    weighting_df[["day_year", "hour", "minute", "weight_day_to_minute"]]
+    .merge(
+        daily_ghi_df[["day_year", "estimated_daily_ghi"]],
+        how="left",
+        on="day_year"
+    )
+)
+estimated_minutely_ghi["estimated_minutely_ghi"] = (
+    estimated_minutely_ghi["estimated_daily_ghi"] * estimated_minutely_ghi["weight_day_to_minute"]
+)
+estimated_minutely_ghi = estimated_minutely_ghi[["day_year", "hour", "minute", "estimated_minutely_ghi"]]
+
+outsample_forecast = (
+    pd.merge(
+        left=outsample_ghi_df[["day_year", "hour", "minute", "ghi"]],
+        right=estimated_minutely_ghi,
+        how="left",
+        on=["day_year", "hour", "minute"]
+    )
+    .interpolate(method="linear", limit_direction="both")
+)
+
+outsample_forecast = outsample_forecast[["ghi", "estimated_minutely_ghi"]]
+outsample_forecast.index = outsample_ghi_df.index
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+residual = (
+    outsample_forecast["ghi"] - outsample_forecast["estimated_minutely_ghi"]
+)
+
+fig, axs = plt.subplots(2, 1, figsize=(8, 6))
+
+ax = visualize_time_series(
+    ax=axs[0],
+    time_series=residual,
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+ax=visualize_time_series(
+    axs[1],
+    time_series=residual[-(60 * 24 * 30):],
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+
+
+for ax in axs:
+    ax.axhline(
+        y=0,
+        linestyle=":",
+        c="k"
+    )
+
+plt.suptitle("Mean Persistence Residuals")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+y_forecast = np.array(
+    np.split(
+        outsample_forecast["estimated_minutely_ghi"].values,      
+        int(len(outsample_forecast["ghi"].values) / 30)
+    )
+)
+y_true = np.array(
+    np.split(
+        outsample_forecast["ghi"].values,      
+        int(len(outsample_forecast["ghi"].values) / 30)
+    )
+)
+
+error_mean, error_sem = compute_rmse(
+    y_true=y_true,
+    y_forecast=y_forecast,
+    axis=0
+)
+MODELS_RESULTS["Top Down GP"] = {"error_mean": error_mean, "error_sem": error_sem}
+
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+ax = visualize_forecast_horizon_accuracy(
+    ax=ax,
+    model_name="Top Down GP",
+    error_name="RMSE",
+    error_mean=error_mean,
+    error_sem=error_sem,
+    marker="o",
+    markersize=5
+)
+plt.legend()
+plt.show()
+```
+
+## More Advanced Models
+
+```{python}
+from torch.utils.data import  DataLoader
+from modules.models.torch_backend.data_handlers import TimeseriesAutoregressiveDataset
+
+AR_WINDOW = 100
+
+insample_ghi_series = insample_ghi_df[insample_ghi_df.index <= "2015-01-02 08:00:00"]["ghi"].values
+validation_ghi_series = insample_ghi_df[insample_ghi_df.index > "2015-01-02 08:00:00"]["ghi"].values
+
+test_ghi_series = np.hstack([validation_ghi_series[-AR_WINDOW:],  outsample_ghi_df["ghi"].values])
+
+insample_ar_dataset = TimeseriesAutoregressiveDataset(
+    X=insample_ghi_series.astype("float32"),
+    y=insample_ghi_series.astype("float32"),
+    ar_window=AR_WINDOW,
+    forecast_horizon=OUTSAMPLE_WINDOW_SIZE,
+    gap=OUTSAMPLE_WINDOW_SIZE
+)
+validation_ar_dataset = TimeseriesAutoregressiveDataset(
+    X=validation_ghi_series.astype("float32"),
+    y=validation_ghi_series.astype("float32"),
+    ar_window=AR_WINDOW,
+    forecast_horizon=OUTSAMPLE_WINDOW_SIZE,
+    gap=OUTSAMPLE_WINDOW_SIZE
+)
+test_ar_dataset = TimeseriesAutoregressiveDataset(
+    X=test_ghi_series.astype("float32"),
+    y=test_ghi_series.astype("float32"),
+    ar_window=AR_WINDOW,
+    forecast_horizon=OUTSAMPLE_WINDOW_SIZE,
+    gap=OUTSAMPLE_WINDOW_SIZE
+)
+
+train_loader = DataLoader(
+    insample_ar_dataset,
+    batch_size=2048,
+    shuffle=False
+)
+validation_loader = DataLoader(
+    validation_ar_dataset,
+    batch_size=2048,
+    shuffle=False
+)
+test_loader = DataLoader(
+    test_ar_dataset,
+    batch_size=2048,
+    shuffle=False
+)
+```
+
+### I Regularized Auto Regressive Model
+
+```{python}
+from torch.optim import Adam
+from torch.nn import MSELoss
+
+from modules.models.torch_backend.neural_networks.architectures import LinearModel, MLPModel
+from modules.models.torch_backend.fitters import TorchModelFitter
+from modules.models.torch_backend.callbacks import EarlyStopping
+
+
+model = LinearModel(
+    in_features=AR_WINDOW,
+    out_features=OUTSAMPLE_WINDOW_SIZE,
+    link_function="ReLU",
+).to("cuda")
+stopper = EarlyStopping(tolerance=100, min_delta=0.001)
+fitter = TorchModelFitter()
+
+
+model, optimizer, hisotry = fitter.fit(
+    model=model,
+    optimizer=Adam(model.parameters(), weight_decay=0.01),
+    train_loader=train_loader,
+    validation_loader=validation_loader,
+    stopper=stopper,
+    epochs=300,
+    loss_function=MSELoss()
+)
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+ground_truth = []
+forecasts = []
+
+for ar_window,  outsample_target in test_loader:
+
+    forecasts.append(
+        model.forward(
+            ar_window.to("cuda")
+        ).to("cpu").detach().numpy()
+    )
+    ground_truth.append(outsample_target.detach().numpy())
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+residual = (
+    pd.Series(np.vstack(ground_truth).flatten() - np.vstack(forecasts).flatten())
+)
+residual.index = outsample_ghi_df.index[:len(residual)]
+
+fig, axs = plt.subplots(2, 1, figsize=(8, 6))
+
+ax = visualize_time_series(
+    ax=axs[0],
+    time_series=residual,
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+ax=visualize_time_series(
+    axs[1],
+    time_series=residual[-(60 * 24 * 30):],
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+
+
+for ax in axs:
+    ax.axhline(
+        y=0,
+        linestyle=":",
+        c="k"
+    )
+
+plt.suptitle("Mean Persistence Residuals")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+error_mean, error_sem = compute_rmse(
+    y_true=np.vstack(ground_truth),
+    y_forecast=np.vstack(forecasts),
+    axis=0
+)
+MODELS_RESULTS["AR"] = {"error_mean": error_mean, "error_sem": error_sem}
+
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+ax = visualize_forecast_horizon_accuracy(
+    ax=ax,
+    model_name="Top Down GP",
+    error_name="RMSE",
+    error_mean=error_mean,
+    error_sem=error_sem,
+    marker="o",
+    markersize=5
+)
+plt.legend()
+plt.show()
+```
+
+### II Autoregressive Multilayer Perceptron
+
+
+```{python}
+from modules.models.torch_backend.neural_networks.architectures import MLPModel
+
+model = MLPModel(
+    in_features=AR_WINDOW,
+    out_features=OUTSAMPLE_WINDOW_SIZE,
+    layers=(30, 30, 30),
+    link_function="ReLU",
+    activation_function="ReLU",
+    dropout_rate=0.1,
+).to("cuda")
+stopper = EarlyStopping(tolerance=100, min_delta=0.001)
+fitter = TorchModelFitter()
+
+
+model, optimizer, hisotry = fitter.fit(
+    model=model,
+    optimizer=Adam(model.parameters(), weight_decay=0.01),
+    train_loader=train_loader,
+    validation_loader=validation_loader,
+    stopper=stopper,
+    epochs=300,
+    loss_function=MSELoss()
+)
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+ground_truth = []
+forecasts = []
+
+for ar_window,  outsample_target in test_loader:
+
+    forecasts.append(
+        model.forward(
+            ar_window.to("cuda")
+        ).to("cpu").detach().numpy()
+    )
+    ground_truth.append(outsample_target.detach().numpy())
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+residual = (
+    pd.Series(np.vstack(ground_truth).flatten() - np.vstack(forecasts).flatten())
+)
+residual.index = outsample_ghi_df.index[:len(residual)]
+
+fig, axs = plt.subplots(2, 1, figsize=(8, 6))
+
+ax = visualize_time_series(
+    ax=axs[0],
+    time_series=residual,
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+ax=visualize_time_series(
+    axs[1],
+    time_series=residual[-(60 * 24 * 30):],
+    time_series_name="Residuals",
+    s=0.05,
+    alpha=0.5
+)
+
+
+for ax in axs:
+    ax.axhline(
+        y=0,
+        linestyle=":",
+        c="k"
+    )
+
+plt.suptitle("Mean Persistence Residuals")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+error_mean, error_sem = compute_rmse(
+    y_true=np.vstack(ground_truth),
+    y_forecast=np.vstack(forecasts),
+    axis=0
+)
+MODELS_RESULTS["MLP AR"] = {"error_mean": error_mean, "error_sem": error_sem}
+
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+ax = visualize_forecast_horizon_accuracy(
+    ax=ax,
+    model_name="Top Down GP",
+    error_name="RMSE",
+    error_mean=error_mean,
+    error_sem=error_sem,
+    marker="o",
+    markersize=5
+)
+plt.legend()
+plt.show()
+```
+
+## IV - Generalized Addtive Linear Model (with MLP as as a covariate function)
+
+$$
+\hat{y}_{t} = \alpha_{day}\phi_{day}(t) + \alpha_{year}\phi_{year}(t) + f(X_{t-2})
+$$
+
+Excluding the autograd functionality offered by JAX this model was developed from first principles using JAX numpy API
+
+```{python}
+import numpy as np
+from jax import random
+
+from sklearn.preprocessing import MinMaxScaler
+
+from modules.data_handling.features_generators import make_fourier_matrix
+
+
+master_key = random.PRNGKey(666)
+
+ghi_scaler = MinMaxScaler()
+satellite_covariates_scaler = MinMaxScaler()
+
+y_insample = insample_ghi_df["ghi"].values
+y_outsample = outsample_ghi_df["ghi"].values
+
+insample_satellite_covariates = insample_ghi_df[np.arange(1, 101)].values
+insample_satellite_covariates = satellite_covariates_scaler.fit_transform(insample_satellite_covariates)
+
+outsample_satellite_covariates = outsample_ghi_df[np.arange(1, 101)].values
+outsample_satellite_covariates = satellite_covariates_scaler.fit_transform(outsample_satellite_covariates)
+
+insample_time = np.arange(len(y_insample))
+outsample_time = np.arange(insample_time.max(), insample_time.max() + len(y_outsample))
+
+insample_fourier_matrix_year = make_fourier_matrix(
+    time_series_indices=np.arange(len(y_insample)), 
+    n_components=10, 
+    period=525949.2
+)
+insample_fourier_matrix_day = make_fourier_matrix(
+    time_series_indices=np.arange(len(y_insample)), 
+    n_components=10, 
+    period=1440
+)
+outsample_fourier_matrix_year = make_fourier_matrix(
+    time_series_indices=outsample_time, 
+    n_components=10, 
+    period=525949.2
+)
+outsample_fourier_matrix_day = make_fourier_matrix(
+    time_series_indices=outsample_time, 
+    n_components=10, 
+    period=1440
+)
+```
+
+```{python}
+from modules.models.jax_backend.additive_models import custom_ghi_model
+from modules.models.jax_backend.initializers import random_gaussian
+from modules.models.jax_backend.activation_functions import relu
+from modules.models.jax_backend.losses import mae
+
+init_params, forward, backward, get_components = custom_ghi_model(
+    seasonality_init_method=random_gaussian,
+    covariates_init_method=random_gaussian,
+    mlp_hidden_link_function=relu,
+    mlp_init_method=random_gaussian,
+    mlp_layers=(),
+    link_function=relu,
+    loss_function=mae,
+    covariates_reg_strength=0.001,
+    seasonality_reg_strength=0.001,
+    prngkey=random.split(master_key)[1]
+)
+
+start_params = init_params(
+    insample_fourier_matrix_year, 
+    insample_fourier_matrix_day,
+    covariates=insample_satellite_covariates
+)
+```
+
+```{python}
+from modules.models.jax_backend.fitters import fit
+from modules.models.jax_backend.optimizers import newton_rhapson
+from modules.models.jax_backend.callbacks import EarlyStopping
+
+params, history = fit(
+    X=(
+        insample_fourier_matrix_year,
+        insample_fourier_matrix_day,
+        insample_satellite_covariates
+    ),
+    y=y_insample, 
+    backward=backward, 
+    start_params=start_params, 
+    optimizer=newton_rhapson(learning_rate=10),
+    epochs=800, 
+    stopper=EarlyStopping(tol=100), 
+    verbose=1, 
+    batch_size=None
+)
+```
+
+```{python}
+components_insample = get_components(
+    (
+        insample_fourier_matrix_year,
+        insample_fourier_matrix_day,
+        insample_satellite_covariates
+    ),
+    params,
+    None
+)
+components_outsample= get_components(
+    (
+        outsample_fourier_matrix_year,
+        outsample_fourier_matrix_day,
+        outsample_satellite_covariates
+    ),
+    params,
+    None
+)
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Show supplementary code"
+y_forecast = np.array(
+    np.split(
+        relu(sum(components_outsample.values())),      
+        int(len(y_outsample) / 30)
+    )
+)
+y_true = np.array(
+    np.split(
+        y_outsample,      
+        int(len(y_outsample) / 30)
+    )
+)
+
+error_mean, error_sem = compute_rmse(
+    y_true=y_true,
+    y_forecast=y_forecast,
+    axis=0
+)
+MODELS_RESULTS["GAM - MLP"] = {"error_mean": error_mean, "error_sem": error_sem}
+
+fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+ax = visualize_forecast_horizon_accuracy(
+    ax=ax,
+    model_name="GAM MLP",
+    error_name="RMSE",
+    error_mean=error_mean,
+    error_sem=error_sem,
+    marker="o",
+    markersize=5
+)
+plt.legend()
+plt.show()
+```
+
+```{python}
+fig = visualize_time_series_components_performance(
+    time_series_train=insample_ghi_df["ghi"],
+    time_series_test=outsample_ghi_df["ghi"],
+    components_insample=components_insample,
+    components_outsample=components_outsample,
+    link_function=relu,
+    target_name="GHI",
+    model_name="Custom Seasonal Regressor",
+    guardrail_metric=compute_symmetric_absolute_percentage_error,
+    loss="MAE",
+    history=history,
+    figsize=(15, 5),
+)
+plt.show()
+```
+
+```{python}
+truncated_components_insample = {
+    component_name: component_value[-3000:] for component_name, component_value in components_insample.items()
+}
+
+truncated_components_outsample = {
+    component_name: component_value[:3000] for component_name, component_value in components_outsample.items()
+}
+
+
+fig = visualize_time_series_components_performance(
+    time_series_train=insample_ghi_df["ghi"][-3000:],
+    time_series_test=outsample_ghi_df["ghi"][:3000],
+    components_insample=truncated_components_insample,
+    components_outsample=truncated_components_outsample,
+    link_function=relu,
+    target_name="GHI",
+    model_name="Custom Seasonal Regressor",
+    guardrail_metric=compute_symmetric_absolute_percentage_error,
+    loss="MAE",
+    history=history,
+    figsize=(15, 5),
+)
+plt.show()
+```
+
+

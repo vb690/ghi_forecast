@@ -38,9 +38,9 @@ def visualize_time_series(ax, time_series, time_series_name, **plot_kwargs):
     the standard error of the mean.
     """
     ax.scatter(
-        time_series.index, 
-        time_series.values, 
-        label=time_series_name, 
+        time_series.index,
+        time_series.values,
+        label=time_series_name,
         **plot_kwargs,
     )
 
@@ -67,8 +67,7 @@ def visualize_time_series_components_performance(
     history,
     figsize=(15, 5),
 ):
-    """Visulize the perfomance of a forecast given its components
-    """
+    """Visulize the perfomance of a forecast given its components"""
     forecast_insample = link_function(sum(components_insample.values()))
     forecast_outsample = link_function(sum(components_outsample.values()))
 
@@ -76,7 +75,7 @@ def visualize_time_series_components_performance(
     residuals_outsample = time_series_test.values - forecast_outsample
 
     computed_guardrail_metric = guardrail_metric(
-        y=time_series_test.values, 
+        y=time_series_test.values,
         yhat=forecast_outsample,
     )
     med_guardrail_metric = round(np.median(computed_guardrail_metric), 3)
@@ -121,20 +120,20 @@ def visualize_time_series_components_performance(
 
     ax_time_series.tick_params(direction="in", top=True, axis="x")
     ax_time_series.grid(
-        visible=True, 
-        which="major", 
-        axis="x", 
-        color="k", 
-        alpha=0.25, 
+        visible=True,
+        which="major",
+        axis="x",
+        color="k",
+        alpha=0.25,
         linestyle="--",
     )
     ax_time_series.legend()
 
     sns.kdeplot(computed_guardrail_metric, ax=ax_performance, clip=(0, 100))
     ax_performance.axvline(
-        med_guardrail_metric, 
-        linestyle=":", 
-        c="r", 
+        med_guardrail_metric,
+        linestyle=":",
+        c="r",
         label=f"Median \n {med_guardrail_metric}",
     )
     ax_performance.set_title("Test Guardrail Metric")
@@ -176,11 +175,11 @@ def visualize_time_series_components_performance(
         ax_component.tick_params(direction="in", top=True, axis="x")
         ax_component.set_title(component_name.capitalize())
         ax_component.grid(
-            visible=True, 
-            which="major", 
-            axis="x", 
-            color="k", 
-            alpha=0.25, 
+            visible=True,
+            which="major",
+            axis="x",
+            color="k",
+            alpha=0.25,
             linestyle="--",
         )
         ax_component.set_ylabel(target_name)
@@ -206,16 +205,16 @@ def visualize_time_series_components_performance(
     ax_residuals.tick_params(direction="in", top=True, axis="x")
     ax_residuals.set_title("Residuals")
     ax_residuals.grid(
-        visible=True, 
-        which="major", 
-        axis="x", 
-        color="k", 
-        alpha=0.25, 
+        visible=True,
+        which="major",
+        axis="x",
+        color="k",
+        alpha=0.25,
         linestyle="--",
     )
     ax_residuals.set_ylabel(target_name)
     ax_residuals.set_xlabel("Date")
-    
+
     plt.suptitle(f"Model {model_name}")
     plt.tight_layout()
     return fig

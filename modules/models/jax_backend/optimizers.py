@@ -25,7 +25,7 @@ def newton_rhapson(learning_rate, beta=0.9):
         previous_updates, previous_params = current_state
         current_updates = tree_map(
             lambda grad, previous_update: beta * previous_update
-            + (grad * learning_rate),
+            + (jnp.clip(grad, -1, 1) * learning_rate),
             grads,
             previous_updates,
         )
