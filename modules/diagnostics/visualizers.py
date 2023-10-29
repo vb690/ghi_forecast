@@ -22,7 +22,7 @@ def visualize_forecast_horizon_accuracy(
     if error_sem is not None:
         upper_bound = error_mean + (ci * error_sem)
         lower_bound = error_mean - (ci * error_sem)
-        ax.fill_between(horizons, lower_bound, upper_bound, alpha=0.5)
+        ax.fill_between(horizons, lower_bound, upper_bound, alpha=0.25)
 
     ax.grid()
     ax.set_xlabel("Forecast Horizon")
