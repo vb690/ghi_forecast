@@ -2,6 +2,7 @@
 title: Forecasting Global Horizontal Irradiance
 author: Valerio Bonometti
 jupyter: python3
+keep-ipynb: True
 execute:
   freeze: auto
 ---
@@ -1261,7 +1262,7 @@ params, history = fit(
     backward=backward, 
     start_params=start_params, 
     optimizer=newton_rhapson(learning_rate=10),
-    epochs=800, 
+    epochs=1000, 
     stopper=EarlyStopping(tol=100), 
     verbose=1, 
     batch_size=None
@@ -1369,4 +1370,23 @@ fig = visualize_time_series_components_performance(
 plt.show()
 ```
 
+# Overall Comparison
 
+```{python}
+fig, ax = plt.subplots(1, 1, figsize=(20, 10))
+
+for model_name, result in MODELS_RESULTS.items():
+
+    ax = visualize_forecast_horizon_accuracy(
+        ax=ax,
+        model_name=model_name,
+        error_name="RMSE",
+        error_mean=result["error_mean"],
+        error_sem=result["error_sem"],
+        marker="o",
+        markersize=5
+    )
+
+plt.legend()
+plt.show()
+```
