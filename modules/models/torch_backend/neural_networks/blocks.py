@@ -16,5 +16,6 @@ def get_dense_block(input_size, layers, activation_function, dropout_rate):
             Dropout(p=dropout_rate),
         ]
         block.extend(layer_list)
+        in_features = out_features
 
     return Sequential(*block)

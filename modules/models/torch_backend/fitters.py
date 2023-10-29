@@ -3,6 +3,8 @@ import numpy as np
 from tqdm import tqdm
 import torch
 
+from modules.models.torch_backend.utilities.device_utilities import move_to_device
+
 
 class TorchModelFitter:
     def __init__(
@@ -65,6 +67,15 @@ class TorchModelFitter:
         training_loss_tracker = 0.0
         model.train(True)
         for batch_number, (batch_X, batch_y) in enumerate(train_loader):
+
+            batch_X = move_to_device(
+                target_tensor=batch_X,
+                device=self._device
+            )
+            batch_y = move_to_device(
+                target_tensor=batch_y,
+                device=self._device
+            )
             optimizer.zero_grad()
             yhat = model(batch_X)
 
@@ -89,6 +100,14 @@ class TorchModelFitter:
 
         with torch.no_grad():
             for batch_number, (batch_X, batch_y) in enumerate(validation_generator):
+                batch_X = move_to_device(
+                    target_tensor=batch_X,
+                    device=self._device
+                )
+                batch_y = move_to_device(
+                    target_tensor=batch_y,
+                    device=self._device
+                )
                 yhat = model(batch_X)
                 validation_loss = loss_function(yhat, batch_y)
                 validation_loss_tracker += validation_loss.item()

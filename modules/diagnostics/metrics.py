@@ -23,5 +23,5 @@ def compute_symmetric_absolute_percentage_error(y, yhat):
     between ground truth values and predictions. It is less biased than
     the absolute_percentage_error and bounded between 0 and 100.
     """
-    sape = (np.abs(y - yhat) / (np.abs(y) + np.abs(yhat))) * 100
+    sape = (np.abs(y - yhat) / (np.abs(y) + np.abs(yhat) + 1e-10)) * 100
     return sape

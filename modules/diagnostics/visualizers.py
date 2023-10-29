@@ -61,6 +61,7 @@ def visualize_time_series_components_performance(
     components_outsample,
     target_name,
     model_name,
+    link_function,
     guardrail_metric,
     loss,
     history,
@@ -68,8 +69,8 @@ def visualize_time_series_components_performance(
 ):
     """Visulize the perfomance of a forecast given its components
     """
-    forecast_insample = sum(components_insample.values())
-    forecast_outsample = sum(components_outsample.values())
+    forecast_insample = link_function(sum(components_insample.values()))
+    forecast_outsample = link_function(sum(components_outsample.values()))
 
     residuals_insample = time_series_train.values - forecast_insample
     residuals_outsample = time_series_test.values - forecast_outsample
